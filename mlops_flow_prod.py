@@ -3,8 +3,13 @@ from flytekit.types.file import FlyteFile
 from typing import TypeVar, NamedTuple
 from flytekitplugins.domino.helpers import Input, Output, run_domino_job_task
 from flytekitplugins.domino.task import DominoJobConfig, DominoJobTask, GitRef, EnvironmentRevisionSpecification, EnvironmentRevisionType, DatasetSnapshot
-from flytekitplugins.domino.artifact import Artifact, DATA, MODEL, REPORT
-
+from flytekitplugins.domino.artifact import Artifact, DATA, MODEL, REPORT, Annotated
+from flytekitplugins.domino.decorator import dominotask
+from scripts.load_data_A import load_data_a
+from scripts.load_data_B import load_data_b
+from scripts.merge_data import merge_data
+from scripts.process_data import process_data
+from scripts.train_model import train_model
 
 # As this is considered a PROD Flow definition, we do not the use_project_defaults_for_omitted parameter
 # and explictly set every required parameter in the task defintion to ensure reproducability.
@@ -26,8 +31,11 @@ cache=True
 DataArtifact = Artifact("Merged Data", DATA)
 ModelArtifact = Artifact("Random Forest Model", MODEL)
 
+
+
+
 @workflow
-def model_training(data_path_a: str, data_path_b: str): 
+def model_training(data_path_a: str, data_path_b: str) -> Annotated[FlyteFile, ModelArtifact]: 
     '''
     Sample data preparation and training flow. This flow:
     
@@ -39,96 +47,14 @@ def model_training(data_path_a: str, data_path_b: str):
 
     To run this flow, execute the following line in the terminal
 
-    pyflyte run --remote  mlops_flow_prod.py model_training --data_path_a /mnt/code/data/datasetA.csv --data_path_b /mnt/code/data/datasetB.csv
+    pyflyte run --remote  mlops_flow_prod.py model_training --data_path_a /domino/datasets/local/flows_decorator/datasetA.csv --data_path_b /domino/datasets/local/flows_decorator/datasetB.csv
     '''
 
-    task1 = run_domino_job_task(
-        flyte_task_name='Load Data A',
-        command='python /mnt/code/scripts/load-data-A.py',
-        inputs=[Input(name='data_path', type=str, value=data_path_a)],
-        output_specs=[Output(name='datasetA', type=FlyteFile[TypeVar('csv')])],
-        environment_name=environment_name,
-        environment_revision_id=environment_revision_id,
-        hardware_tier_name="Medium",
-        dataset_snapshots=[],
-        main_git_repo_ref=GitRef(Type=GitRef_type, Value=GitRef_value),
-        volume_size_gib=volume_size_gib,
-        dfs_repo_commit_id=dfs_repo_commit_id,
-        external_data_volumes=[],
-        cache=cache,
-        cache_version="1.0"
-    )
+    data_a = load_data_a(data_path_a)
+    data_b = load_data_b(data_path_b)
+    
+    merged_data = merge_data(data_a, data_b)
 
-    task2 = run_domino_job_task(
-        flyte_task_name='Load Data B',
-        command='python /mnt/code/scripts/load-data-B.py',
-        inputs=[Input(name='data_path', type=str, value=data_path_b)],
-        output_specs=[Output(name='datasetB', type=FlyteFile[TypeVar('csv')])],
-        environment_name=environment_name,
-        environment_revision_id=environment_revision_id,
-        hardware_tier_name="5 GPUs",
-        dataset_snapshots=[],
-        main_git_repo_ref=GitRef(Type=GitRef_type, Value=GitRef_value),
-        volume_size_gib=volume_size_gib,
-        dfs_repo_commit_id=dfs_repo_commit_id,
-        external_data_volumes=[],
-        cache=cache,
-        cache_version="1.0"
-    )
+    processed_data = process_data(merged_data)
 
-    task3 = run_domino_job_task(
-        flyte_task_name='Merge Data 2',
-        command='python /mnt/code/scripts/merge-data.py',
-        inputs=[
-            Input(name='datasetA', type=FlyteFile[TypeVar('csv')], value=task1['datasetA']),
-            Input(name='datasetB', type=FlyteFile[TypeVar('csv')], value=task2['datasetB'])],
-        output_specs=[Output(name='merged_data', type=DataArtifact.File(name="merged_data.csv"))],
-        environment_name=environment_name,
-        environment_revision_id=environment_revision_id,
-        hardware_tier_name="Medium",
-        dataset_snapshots=[],
-        main_git_repo_ref=GitRef(Type=GitRef_type, Value=GitRef_value),
-        volume_size_gib=volume_size_gib,
-        dfs_repo_commit_id=dfs_repo_commit_id,
-        external_data_volumes=[],
-        cache=cache,
-        cache_version="1.0"
-    )
-
-    task4 = run_domino_job_task(
-        flyte_task_name='Process Data',
-        command='python /mnt/code/scripts/process-data.py',
-        inputs=[Input(name='merged_data', type=FlyteFile[TypeVar('csv')], value=task3['merged_data'])],
-        output_specs=[Output(name='processed_data', type=FlyteFile[TypeVar('csv')])],
-        environment_name=environment_name,
-        environment_revision_id=environment_revision_id,
-        hardware_tier_name="Medium",
-        dataset_snapshots=[],
-        main_git_repo_ref=GitRef(Type=GitRef_type, Value=GitRef_value),
-        volume_size_gib=volume_size_gib,
-        dfs_repo_commit_id=dfs_repo_commit_id,
-        external_data_volumes=[],
-        cache=cache,
-        cache_version="1.0"
-    )
-
-    task5 = run_domino_job_task(
-        flyte_task_name='Train Model',
-        command='python /mnt/code/scripts/train-model.py',
-        inputs=[
-            Input(name='processed_data', type=FlyteFile[TypeVar('csv')], value=task4['processed_data']),
-            Input(name='num_estimators', type=int, value=100)],
-        output_specs=[Output(name='model', type=ModelArtifact.File(name="model.pkl"))],
-        environment_name=environment_name,
-        environment_revision_id=environment_revision_id,
-        hardware_tier_name="Large",
-        dataset_snapshots=[],
-        main_git_repo_ref=GitRef(Type=GitRef_type, Value=GitRef_value),
-        volume_size_gib=volume_size_gib,
-        dfs_repo_commit_id=dfs_repo_commit_id,
-        external_data_volumes=[],
-        cache=cache,
-        cache_version="1.0"
-    )
-
-    return 
+    return train_model(processed_data, 100)
